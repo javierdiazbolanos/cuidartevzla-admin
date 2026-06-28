@@ -716,35 +716,24 @@ export default function MassiveLoader({ onBatchLoaded }: MassiveLoaderProps) {
               ) : (
                 /* INACTIVE PLACEHOLDER GRID */
                 <div className="p-4 sm:p-8 text-center flex flex-col items-center">
-                  <div className="grid grid-cols-2 sm:flex sm:flex-wrap justify-center gap-2 sm:gap-3 mb-4 w-full max-w-sm sm:max-w-none">
+                  <div className="flex flex-col sm:flex-row justify-center gap-2 sm:gap-3 mb-4 w-full max-w-xs sm:max-w-none">
                     <button
                       onClick={startCamera}
                       id="btn-open-camera"
-                      className="col-span-2 sm:col-auto bg-sky-600 hover:bg-sky-500 text-white font-bold px-3 sm:px-5 py-2.5 sm:py-3 rounded-xl shadow-md transition-colors flex items-center justify-center space-x-1.5 text-xs sm:text-sm cursor-pointer"
+                      className="w-full sm:w-auto bg-sky-600 hover:bg-sky-500 text-white font-bold px-5 py-3 rounded-xl shadow-md transition-colors flex items-center justify-center space-x-2 text-sm cursor-pointer"
                     >
-                      <Camera className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                      <span>Activar Cámara</span>
+                      <Camera className="w-4 h-4" />
+                      <span>📷 Activar Cámara</span>
                     </button>
-                    <label className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 hover:border-slate-300 font-semibold px-3 sm:px-5 py-2.5 sm:py-3 rounded-xl transition-colors flex items-center justify-center space-x-1.5 text-xs sm:text-sm cursor-pointer shadow-sm">
-                      <ImageIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-sky-600" />
-                      <span>Subir Imagen</span>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        onChange={handleImageUpload}
-                        className="hidden"
-                      />
+                    <label className="w-full sm:w-auto bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 hover:border-slate-300 font-semibold px-5 py-3 rounded-xl transition-colors flex items-center justify-center space-x-2 text-sm cursor-pointer shadow-sm">
+                      <ImageIcon className="w-4 h-4 text-sky-600" />
+                      <span>🖼️ Subir Imagen</span>
+                      <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
                     </label>
-                    <label className="bg-white hover:bg-rose-50 text-slate-700 border-2 border-rose-200 hover:border-rose-300 font-semibold px-3 sm:px-5 py-2.5 sm:py-3 rounded-xl transition-colors flex items-center justify-center space-x-1.5 text-xs sm:text-sm cursor-pointer shadow-sm">
-                      <FileText className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-rose-600" />
-                      <span>Subir PDF</span>
-                      <input
-                        type="file"
-                        ref={pdfInputRef}
-                        accept=".pdf"
-                        onChange={handlePDFUpload}
-                        className="hidden"
-                      />
+                    <label className="w-full sm:w-auto bg-rose-50 hover:bg-rose-100 text-rose-700 border-2 border-rose-400 font-bold px-5 py-3 rounded-xl transition-colors flex items-center justify-center space-x-2 text-sm cursor-pointer shadow-sm">
+                      <FileText className="w-4 h-4 text-rose-600" />
+                      <span>📄 Subir PDF</span>
+                      <input type="file" ref={pdfInputRef} accept=".pdf" onChange={handlePDFUpload} className="hidden" />
                     </label>
                   </div>
                   <p className="text-xs text-slate-400">
