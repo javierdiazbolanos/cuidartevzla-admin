@@ -7,7 +7,8 @@ import React, { useState, useRef, useEffect } from "react";
 import * as XLSX from "xlsx";
 import { ParsedPaciente } from "../types";
 import { getTesseractWorker, preprocessImage, parseOCRWords, loadOpenCV, isOpenCVLoaded } from "../utils/ocr";
-import { Upload, Clipboard, Camera, Image as ImageIcon, Sparkles, RefreshCw, Eye, AlertCircle, Trash2 } from "lucide-react";
+import { llmOCRPage, avgBatchConfidence, shouldUseLLMFallback } from "../utils/llm-ocr";
+import { Upload, Clipboard, Camera, Image as ImageIcon, Sparkles, RefreshCw, Eye, AlertCircle, Trash2, FileText, Bot } from "lucide-react";
 
 interface MassiveLoaderProps {
   onBatchLoaded: (patients: ParsedPaciente[]) => void;
@@ -29,9 +30,13 @@ export default function MassiveLoader({ onBatchLoaded }: MassiveLoaderProps) {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [opencvLoaded, setOpencvLoaded] = useState(false);
+  const [usingLLM, setUsingLLM] = useState(false);          // Si está usando fallback LLM
+  const [llmPagesDone, setLlmPagesDone] = useState(0);      // Páginas procesadas por LLM
+  const [llmPagesTotal, setLlmPagesTotal] = useState(0);    // Total páginas a procesar por LLM
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const pdfInputRef = useRef<HTMLInputElement>(null);
 
   // Pre-load OpenCV in the background when active tab changes to OCR
   useEffect(() => {
@@ -106,9 +111,69 @@ export default function MassiveLoader({ onBatchLoaded }: MassiveLoaderProps) {
     }
   };
 
-  const handleFile = (file: File) => {
+  const handleFile = async (file: File) => {
     const reader = new FileReader();
     const fileName = file.name.toLowerCase();
+
+    if (fileName.endsWith(".pdf")) {
+      // === PDF HANDLING via pdf.js ===
+      setActiveTab("ocr"); // Switch to OCR tab
+      setOcrLoading(true);
+      setOcrStep("Cargando PDF...");
+      setOcrProgress(0);
+      
+      try {
+        const arrayBuf = await file.arrayBuffer();
+        // Dynamic import de pdfjs-dist
+        const pdfjsLib = await import("pdfjs-dist");
+        pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs`;
+        
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuf }).promise;
+        const totalPages = pdf.numPages;
+        setOcrProgress(5);
+        
+        const allPatients: ParsedPaciente[] = [];
+        
+        for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+          setOcrStep(`Renderizando página ${pageNum} de ${totalPages}...`);
+          setOcrProgress(5 + Math.round((pageNum / totalPages) * 20));
+          
+          const page = await pdf.getPage(pageNum);
+          const viewport = page.getViewport({ scale: 2.0 }); // 2x para mejor OCR
+          
+          const offCanvas = document.createElement("canvas");
+          offCanvas.width = viewport.width;
+          offCanvas.height = viewport.height;
+          const offCtx = offCanvas.getContext("2d")!;
+          
+          await page.render({
+            canvasContext: offCtx,
+            viewport: viewport,
+          }).promise;
+          
+          // Preprocesar y hacer OCR de esta página
+          const pagePatients = await processOCRCanvasPage(offCanvas, pageNum, totalPages, true);
+          allPatients.push(...pagePatients);
+        }
+        
+        if (allPatients.length > 0) {
+          onBatchLoaded(allPatients);
+        } else {
+          alert("No se pudieron extraer pacientes del PDF. Intente con mejor calidad de escaneo.");
+        }
+        
+        setOcrLoading(false);
+        setOcrStep("");
+        setUsingLLM(false);
+      } catch (err) {
+        console.error("Error procesando PDF:", err);
+        alert("Error al procesar el PDF. Verifique que no esté corrupto o protegido.");
+        setOcrLoading(false);
+        setOcrStep("");
+        setUsingLLM(false);
+      }
+      return;
+    }
 
     if (fileName.endsWith(".xlsx") || fileName.endsWith(".xls")) {
       // Parse Excel (.xlsx) locally
@@ -300,47 +365,110 @@ export default function MassiveLoader({ onBatchLoaded }: MassiveLoaderProps) {
     }
   };
 
-  const processOCRImage = async (canvas: HTMLCanvasElement) => {
-    setOcrLoading(true);
-    setOcrProgress(0);
-    setOcrStep("Procesando imagen local con OpenCV.js...");
+  /**
+   * Pipeline híbrido: Tesseract.js → si confianza < 70% → LLM fallback
+   * @param canvas Canvas con la imagen a procesar
+   * @param pageNum Número de página (para logs y UI)
+   * @param totalPages Total de páginas (para progreso)
+   * @param isPDF Indica si la fuente es un PDF (afecta mensajes)
+   */
+  const handlePDFUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      handleFile(e.target.files[0]);
+    }
+  };
 
-    try {
-      // 1. Preprocess with OpenCV (grayscale, binarize, threshold)
-      // Pass the canvas and let preprocess draw back onto the same canvas
-      const dummyImg = new Image();
-      dummyImg.onload = async () => {
-        preprocessImage(dummyImg, canvas);
-        setOcrProgress(15);
+  const processOCRCanvasPage = async (
+    canvas: HTMLCanvasElement,
+    pageNum: number,
+    totalPages: number,
+    isPDF: boolean = false
+  ): Promise<ParsedPaciente[]> => {
+    // 1. Preprocess with OpenCV (grayscale, binarize, threshold)
+    const tempImg = new Image();
+    return new Promise((resolve) => {
+      tempImg.onload = async () => {
+        const procCanvas = document.createElement("canvas");
+        procCanvas.width = canvas.width;
+        procCanvas.height = canvas.height;
+        const procCtx = procCanvas.getContext("2d")!;
+        procCtx.drawImage(tempImg, 0, 0);
+        
+        preprocessImage(tempImg, procCanvas);
+        
+        const progressBase = 25 + (isPDF ? 0 : 0);
+        setOcrProgress(progressBase);
+        
+        // Update preview with preprocessed image
+        setCapturedImage(procCanvas.toDataURL("image/png"));
 
-        // Update the captured image preview with the high-contrast preprocessed view!
-        setCapturedImage(canvas.toDataURL("image/png"));
-
-        // 2. Load Tesseract.js Worker
-        setOcrStep("Iniciando motor de reconocimiento OCR en Español...");
+        // 2. Tesseract OCR
+        setOcrStep(isPDF 
+          ? `OCR página ${pageNum}/${totalPages} con Tesseract.js...`
+          : "Iniciando motor de reconocimiento OCR en Español...");
         const worker = await getTesseractWorker((progressPct) => {
-          setOcrProgress(30 + Math.round(progressPct * 0.7)); // Scale progress mapping
+          setOcrProgress(progressBase + Math.round(progressPct * 0.5));
         });
 
         setOcrStep("Ejecutando reconocimiento de caracteres (OCR)...");
-        const { data } = await worker.recognize(canvas);
-        
+        const { data } = await worker.recognize(procCanvas);
+
         setOcrStep("Agrupando coordenadas espaciales y analizando campos...");
         const parsedPatients = parseOCRWords(data.words);
-
-        if (parsedPatients.length > 0) {
-          onBatchLoaded(parsedPatients);
-        } else {
-          alert("No se pudieron extraer datos de la imagen. Por favor intente con una foto más nítida o ingrese manualmente.");
+        
+        // 3. Decidir si usar LLM fallback
+        if (shouldUseLLMFallback(parsedPatients)) {
+          setOcrProgress(75);
+          setUsingLLM(true);
+          
+          if (isPDF) {
+            setLlmPagesTotal(totalPages);
+            setLlmPagesDone(pageNum);
+          }
+          
+          setOcrStep(isPDF
+            ? `Tesseract baja confianza → IA página ${pageNum}/${totalPages}...`
+            : "Tesseract baja confianza → Mejorando con IA (Gemini Flash)...");
+          
+          const llmPatients = await llmOCRPage(procCanvas, pageNum, (msg) => {
+            setOcrStep(msg);
+          });
+          
+          if (llmPatients.length > 0) {
+            setOcrProgress(95);
+            setUsingLLM(false);
+            resolve(llmPatients);
+            return;
+          }
+          // Si LLM también falla, usar resultado de Tesseract
+          setOcrStep("IA no pudo mejorar. Usando resultado de Tesseract.");
         }
-        setOcrLoading(false);
-        setOcrStep("");
+        
+        setOcrProgress(95);
+        setUsingLLM(false);
+        resolve(parsedPatients);
       };
-      dummyImg.src = canvas.toDataURL();
+      tempImg.src = canvas.toDataURL();
+    });
+  };
 
+  const processOCRImage = async (canvas: HTMLCanvasElement) => {
+    setOcrLoading(true);
+    setOcrProgress(0);
+
+    try {
+      const patients = await processOCRCanvasPage(canvas, 1, 1, false);
+      
+      if (patients.length > 0) {
+        onBatchLoaded(patients);
+      } else {
+        alert("No se pudieron extraer datos de la imagen. Por favor intente con una foto más nítida o ingrese manualmente.");
+      }
+      setOcrLoading(false);
+      setOcrStep("");
     } catch (err) {
       console.error(err);
-      alert("Error durante el procesamiento OCR. Fallando a ingreso de texto.");
+      alert("Error durante el procesamiento OCR.");
       setOcrLoading(false);
       setOcrStep("");
     }
@@ -429,12 +557,12 @@ export default function MassiveLoader({ onBatchLoaded }: MassiveLoaderProps) {
                 type="file"
                 ref={fileInputRef}
                 onChange={handleFileChange}
-                accept=".csv, .xlsx, .xls"
+                accept=".csv, .xlsx, .xls, .pdf"
                 className="hidden"
               />
               <Upload className="w-10 h-10 text-slate-400 mb-2" />
               <span className="text-sm font-semibold text-slate-700">Arrastre su archivo aquí</span>
-              <span className="text-xs text-slate-400 mt-1">Soporta hojas de cálculo de Excel (.xlsx) y archivos .csv</span>
+              <span className="text-xs text-slate-400 mt-1">Soporta Excel (.xlsx), CSV, y PDFs con listados escaneados</span>
             </div>
           </div>
         )}
@@ -447,11 +575,11 @@ export default function MassiveLoader({ onBatchLoaded }: MassiveLoaderProps) {
                 <h3 className="text-sm font-bold text-slate-800 flex items-center space-x-1.5">
                   <span>Escanear Listado Escrito / Impreso</span>
                   <span className="bg-sky-50 text-sky-700 border border-sky-200 text-[10px] px-2 py-0.5 rounded-full font-mono font-bold uppercase">
-                    100% Local WASM
+                    Local + IA
                   </span>
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Utilice la cámara de su teléfono o cargue una foto para extraer la tabla mediante algoritmos de inteligencia visual integrados.
+                  Cargue una foto o PDF escaneado. Si la imagen es borrosa, la IA (Gemini Flash) se activa automáticamente.
                 </p>
               </div>
 
@@ -537,7 +665,7 @@ export default function MassiveLoader({ onBatchLoaded }: MassiveLoaderProps) {
               ) : (
                 /* INACTIVE PLACEHOLDER GRID */
                 <div className="p-8 text-center flex flex-col items-center">
-                  <div className="flex space-x-4 mb-4">
+                  <div className="flex flex-wrap justify-center gap-3 mb-4">
                     <button
                       onClick={startCamera}
                       id="btn-open-camera"
@@ -556,9 +684,20 @@ export default function MassiveLoader({ onBatchLoaded }: MassiveLoaderProps) {
                         className="hidden"
                       />
                     </label>
+                    <label className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 hover:border-slate-300 font-semibold px-5 py-3 rounded-xl transition-colors flex items-center space-x-1.5 text-sm cursor-pointer shadow-sm">
+                      <FileText className="w-4 h-4 text-rose-600" />
+                      <span>Subir PDF</span>
+                      <input
+                        type="file"
+                        ref={pdfInputRef}
+                        accept=".pdf"
+                        onChange={handlePDFUpload}
+                        className="hidden"
+                      />
+                    </label>
                   </div>
                   <p className="text-xs text-slate-400">
-                    Soporta formatos PNG, JPG o capturas directas en vivo.
+                    Cámara, imágenes (PNG/JPG), o PDFs escaneados. El pipeline OCR + IA se activa automáticamente.
                   </p>
                 </div>
               )}
@@ -566,17 +705,26 @@ export default function MassiveLoader({ onBatchLoaded }: MassiveLoaderProps) {
               {/* ACTIVE PROCESSING PANEL OVERLAY */}
               {ocrLoading && (
                 <div className="absolute inset-0 bg-white/95 backdrop-blur-sm flex flex-col items-center justify-center p-6 animate-fadeIn z-30">
-                  <RefreshCw className="w-10 h-10 text-sky-600 animate-spin mb-4" />
+                  {usingLLM ? (
+                    <Bot className="w-10 h-10 text-purple-600 animate-pulse mb-4" />
+                  ) : (
+                    <RefreshCw className="w-10 h-10 text-sky-600 animate-spin mb-4" />
+                  )}
                   <span className="text-sm font-semibold text-slate-800">{ocrStep}</span>
                   
                   {/* Progress bar */}
                   <div className="w-64 h-1.5 bg-slate-100 rounded-full overflow-hidden mt-3">
                     <div
-                      className="bg-sky-500 h-full transition-all duration-200"
+                      className={`h-full transition-all duration-200 ${usingLLM ? "bg-purple-500" : "bg-sky-500"}`}
                       style={{ width: `${ocrProgress}%` }}
                     />
                   </div>
                   <span className="text-xs font-mono text-slate-400 mt-1">{ocrProgress}% completado</span>
+                  {usingLLM && (
+                    <span className="text-[10px] font-mono text-purple-600 mt-2 bg-purple-50 px-2 py-0.5 rounded-full">
+                      🤖 Usando IA para mejorar precisión
+                    </span>
+                  )}
                 </div>
               )}
             </div>
