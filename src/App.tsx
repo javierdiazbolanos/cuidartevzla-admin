@@ -12,7 +12,7 @@ import MassiveLoader from "./components/MassiveLoader";
 import ReviewTable from "./components/ReviewTable";
 import IndividualPatient from "./components/IndividualPatient";
 import TransportManager from "./components/TransportManager";
-import { Activity, Users, Truck, Heart, FileSpreadsheet, PlusCircle, LogOut, ShieldCheck, HelpCircle } from "lucide-react";
+import { Activity, Users, Truck, Heart, FileSpreadsheet, PlusCircle, LogOut, ShieldCheck, HelpCircle, AlertCircle } from "lucide-react";
 
 export default function App() {
   const [authorized, setAuthorized] = useState(false);
@@ -25,6 +25,13 @@ export default function App() {
   const [reviewBatch, setReviewBatch] = useState<ParsedPaciente[]>([]);
   const [batchSummaryMessage, setBatchSummaryMessage] = useState("");
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+
+  // Helper para Toasts rápidos
+  const triggerToast = (msg: string) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(null), 4500);
+  };
 
   // Initialize API and load database resources
   useEffect(() => {
@@ -267,7 +274,7 @@ export default function App() {
           {activeTab === "carga" && (
             <div className="space-y-8">
               {/* Massive loader input workspace */}
-              <MassiveLoader onBatchLoaded={handleBatchLoaded} />
+              <MassiveLoader onBatchLoaded={handleBatchLoaded} onToast={triggerToast} />
 
               {/* In-memory interactive review table */}
               <ReviewTable
@@ -337,6 +344,14 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      {/* Toast notification system */}
+      {toastMsg && (
+        <div id="toast-message" className="fixed top-4 left-1/2 -translate-x-1/2 bg-rose-600 text-white px-5 py-3.5 rounded-2xl text-xs font-semibold shadow-2xl flex items-center gap-2.5 z-50 animate-bounce max-w-sm w-[90vw] text-center border border-rose-400">
+          <AlertCircle className="w-4.5 h-4.5 text-white shrink-0" />
+          <span className="flex-1">{toastMsg}</span>
+        </div>
+      )}
     </div>
   );
 }
