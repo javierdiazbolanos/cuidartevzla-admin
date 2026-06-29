@@ -10,7 +10,7 @@
 import { ParsedPaciente } from "../types";
 
 const OPENROUTER_API_KEY = import.meta.env.VITE_OPENROUTER_API_KEY || "";
-const LLM_MODEL = "google/gemini-2.0-flash-001";
+const LLM_MODEL = "google/gemini-2.5-flash-lite";
 
 interface OpenRouterResponse {
   choices?: Array<{
@@ -38,6 +38,8 @@ export async function llmOCRPage(
   onProgress?.(`Enviando página ${pageNum} a Gemini Flash (OpenRouter)...`);
 
   const base64Image = canvas.toDataURL("image/png").split(",")[1];
+  const imageSizeKB = Math.round(base64Image.length * 0.75 / 1024); // base64 → bytes aprox
+  console.log(`[LLM] Enviando página ${pageNum} a Gemini Flash — imagen ${imageSizeKB}KB — canvas ${canvas.width}x${canvas.height}`);
 
   const prompt = `Eres un sistema de OCR médico de emergencia. Extrae TODOS los pacientes de esta imagen escaneada de una lista hospitalaria venezolana.
 
@@ -86,9 +88,8 @@ Formato de salida:
             ],
           },
         ],
-        max_tokens: 4096,
+        max_tokens: 16384, // Suficiente para ~50 pacientes por página
         temperature: 0.1, // Baja temperatura = más preciso para OCR
-        response_format: { type: "json_object" }, // Forzar JSON si el modelo lo soporta
       }),
     });
 
@@ -115,19 +116,28 @@ Formato de salida:
 
     // Extraer el JSON (puede venir con markdown ```json ... ```)
     const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/) || content.match(/(\[[\s\S]*\])/);
-    const jsonStr = jsonMatch ? jsonMatch[1].trim() : content.trim();
+    let jsonStr = jsonMatch ? jsonMatch[1].trim() : content.trim();
+
+    console.log(`[LLM] Respuesta: ${content.length} chars — primeros 80: "${content.substring(0, 80)}"`);
 
     let rawPatients: any[];
     try {
       rawPatients = JSON.parse(jsonStr);
-    } catch {
+    } catch (e1) {
       // Segundo intento: el modelo puede haber devuelto un objeto con key "pacientes"
       try {
         const obj = JSON.parse(jsonStr);
         rawPatients = obj.pacientes || obj.data || obj.rows || [];
       } catch {
-        console.error("No se pudo parsear la respuesta JSON del LLM:", jsonStr.substring(0, 200));
-        return [];
+        // Tercer intento: JSON truncado — intentar rescatar objetos individuales
+        console.warn("[LLM] JSON malformado, intentando rescate de objetos individuales...");
+        const rescued = rescuePartialJSON(jsonStr);
+        if (rescued.length > 0) {
+          rawPatients = rescued;
+        } else {
+          console.error("No se pudo parsear la respuesta JSON del LLM:", jsonStr.substring(0, 200));
+          return [];
+        }
       }
     }
 
@@ -185,11 +195,78 @@ export function avgBatchConfidence(patients: ParsedPaciente[]): number {
 
 /**
  * Decide si se debe usar fallback LLM basado en:
- * - Confianza promedio < 70%
+ * - Confianza promedio < 85% (umbral alto porque Tesseract sobrestima en español)
+ * - Nombres con calidad sospechosa (>40% parecen basura OCR)
+ * - Muy pocos pacientes extraídos (< 3)
  * - Hay API key configurada
  */
 export function shouldUseLLMFallback(patients: ParsedPaciente[]): boolean {
   if (!OPENROUTER_API_KEY) return false;
-  if (patients.length === 0) return true; // Tesseract no encontró nada → intentar LLM
-  return avgBatchConfidence(patients) < 70;
+  if (patients.length === 0) return true;
+
+  const avgConf = avgBatchConfidence(patients);
+
+  // Regla 1: Confianza promedio baja
+  if (avgConf < 85) return true;
+
+  // Regla 2: Calidad de nombres sospechosa (>40% son basura)
+  const garbageCount = patients.filter((p) => isLikelyOCRGarbage(p.nombre)).length;
+  if (garbageCount > patients.length * 0.4) return true;
+
+  // Regla 3: Muy pocos pacientes para una página que debería tener varios
+  if (patients.length < 3) return true;
+
+  return false;
+}
+
+/**
+ * Detecta si un nombre extraído por OCR probablemente es basura
+ * (consonantes sin vocales, texto sin sentido)
+ */
+function isLikelyOCRGarbage(name: string): boolean {
+  if (!name || name.length < 3) return true;
+  const cleaned = name.replace(/\s/g, "");
+  const vowels = (cleaned.match(/[aeiouáéíóúüAEIOUÁÉÍÓÚÜ]/g) || []).length;
+  const ratio = vowels / cleaned.length;
+  // Menos del 20% de vocales en un nombre > 4 letras = basura
+  return ratio < 0.2 && cleaned.length > 4;
+}
+
+/**
+ * Intenta rescatar objetos JSON individuales de un array truncado.
+ * Ej: '[{...}, {"nombre": "JUAN", ...' → extrae los objetos completos.
+ */
+function rescuePartialJSON(truncated: string): any[] {
+  const results: any[] = [];
+  const trimmed = truncated.replace(/^\s*\[\s*/, "");
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escapeNext = false;
+
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    if (escapeNext) { escapeNext = false; continue; }
+    if (ch === "\\" && inString) { escapeNext = true; continue; }
+    if (ch === '"' && !escapeNext) { inString = !inString; continue; }
+    if (inString) continue;
+
+    if (ch === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        const objStr = trimmed.substring(start, i + 1);
+        try {
+          const obj = JSON.parse(objStr);
+          results.push(obj);
+        } catch { /* objeto malformado */ }
+        start = -1;
+      }
+    }
+  }
+
+  console.log(`[LLM Rescue] ${results.length} objetos rescatados de JSON truncado`);
+  return results;
 }

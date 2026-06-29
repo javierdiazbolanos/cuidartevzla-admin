@@ -12,9 +12,10 @@ import { Upload, Clipboard, Camera, Image as ImageIcon, Sparkles, RefreshCw, Eye
 
 interface MassiveLoaderProps {
   onBatchLoaded: (patients: ParsedPaciente[]) => void;
+  onToast?: (msg: string) => void;
 }
 
-export default function MassiveLoader({ onBatchLoaded }: MassiveLoaderProps) {
+export default function MassiveLoader({ onBatchLoaded, onToast }: MassiveLoaderProps) {
   const [activeTab, setActiveTab] = useState<"paste" | "ocr">("paste");
   
   // --- TAB 1: PASTE / CSV / EXCEL STATE ---
@@ -159,9 +160,33 @@ export default function MassiveLoader({ onBatchLoaded }: MassiveLoaderProps) {
           }
         }
 
-        // === DECISIÓN: ¿PDF estructurado o imagen? ===
-        const totalTextChars = allTextLines.join("").replace(/\s/g, "").length;
-        const isStructured = totalTextChars > 50; // Umbral: más de 50 caracteres reales
+        // === DECISIÓN INTELIGENTE: ¿PDF estructurado o imagen? ===
+        const allText = allTextLines.join(" ");
+        const totalTextChars = allText.replace(/\s/g, "").length;
+
+        // Heurística: no basta con tener >50 chars — el texto debe contener
+        // palabras que parezcan nombres reales o números tipo cédula.
+        const words = allText.split(/\s+/).filter((w: string) => w.length > 2);
+        const validNameWords = words.filter((w: string) => {
+          const cleaned = w.replace(/[^a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]/g, "");
+          if (cleaned.length < 3) return false;
+          const vowels = (cleaned.match(/[aeiouáéíóúüAEIOUÁÉÍÓÚÜ]/g) || []).length;
+          return vowels / cleaned.length > 0.25; // al menos 25% vocales = palabra real
+        });
+        const cedulaLike = words.filter((w: string) => {
+          const digits = w.replace(/\D/g, "");
+          return digits.length >= 6 && digits.length <= 9;
+        });
+
+        const isStructured =
+          totalTextChars > 50 &&
+          (validNameWords.length >= 3 || cedulaLike.length >= 2);
+
+        console.log(
+          `[PDF Detect] chars=${totalTextChars} words=${words.length} ` +
+          `validNames=${validNameWords.length} cedulas=${cedulaLike.length} ` +
+          `→ isStructured=${isStructured}`
+        );
         
         if (isStructured) {
           // ✅ PDF ESTRUCTURADO — parse directo como texto
@@ -209,7 +234,7 @@ export default function MassiveLoader({ onBatchLoaded }: MassiveLoaderProps) {
           if (allPatients.length > 0) {
             onBatchLoaded(allPatients);
           } else {
-            alert("No se pudieron extraer pacientes del PDF. Intente con mejor calidad de escaneo.");
+            onToast?.("No se pudieron extraer pacientes del PDF. La imagen es muy borrosa — active la cámara o use un PDF de mejor calidad.");
           }
         }
         
@@ -218,7 +243,7 @@ export default function MassiveLoader({ onBatchLoaded }: MassiveLoaderProps) {
         setUsingLLM(false);
       } catch (err) {
         console.error("Error procesando PDF:", err);
-        alert("Error al procesar el PDF. Verifique que no esté corrupto o protegido.");
+        onToast?.("Error al procesar el PDF. Verifique que no esté corrupto o protegido.");
         setOcrLoading(false);
         setOcrStep("");
         setUsingLLM(false);
@@ -237,7 +262,7 @@ export default function MassiveLoader({ onBatchLoaded }: MassiveLoaderProps) {
           const jsonData = XLSX.utils.sheet_to_json<any[]>(worksheet, { header: 1 });
           processParsedMatrix(jsonData);
         } catch (err) {
-          alert("Error leyendo archivo de Excel. Asegúrese de que no esté corrupto.");
+          onToast?.("Error leyendo archivo de Excel. Asegúrese de que no esté corrupto.");
         }
       };
       reader.readAsBinaryString(file);
@@ -343,7 +368,7 @@ export default function MassiveLoader({ onBatchLoaded }: MassiveLoaderProps) {
     if (parsedPatients.length > 0) {
       onBatchLoaded(parsedPatients);
     } else {
-      alert("No se detectaron pacientes válidos. Por favor verifique el formato de las columnas.");
+      onToast?.("No se detectaron pacientes válidos. Verifique el formato de las columnas (Nombre, Cédula, Edad, Sexo, Procedencia).");
     }
   };
 
@@ -365,7 +390,7 @@ export default function MassiveLoader({ onBatchLoaded }: MassiveLoaderProps) {
       }
     } catch (err) {
       console.error("No se pudo iniciar la cámara:", err);
-      alert("Error al iniciar cámara. Se requiere permiso o dispositivo de captura.");
+      onToast?.("Error al iniciar cámara. Verifique permisos del navegador o use un dispositivo con cámara.");
       setCameraActive(false);
     }
   };
@@ -463,12 +488,27 @@ export default function MassiveLoader({ onBatchLoaded }: MassiveLoaderProps) {
 
         setOcrStep("Ejecutando reconocimiento de caracteres (OCR)...");
         const { data } = await worker.recognize(procCanvas);
+        const words = data?.words || [];
+        
+        console.log(`[Tesseract] Palabras detectadas: ${words.length}`);
 
         setOcrStep("Agrupando coordenadas espaciales y analizando campos...");
-        const parsedPatients = parseOCRWords(data.words);
+        const parsedPatients = parseOCRWords(words);
         
+        // Diagnóstico
+        const tesseractConf = parsedPatients.length > 0
+          ? parsedPatients.reduce((s: number, p: any) => s + (p.confianza_ocr || 0), 0) / parsedPatients.length
+          : 0;
+        console.log(
+          `[OCR] Página ${pageNum}: ${words.length} palabras → ` +
+          `${parsedPatients.length} pacientes (conf avg=${Math.round(tesseractConf)}%)`
+        );
+
         // 3. Decidir si usar LLM fallback
-        if (shouldUseLLMFallback(parsedPatients)) {
+        const useLLM = shouldUseLLMFallback(parsedPatients);
+        console.log(`[LLM Decision] shouldUseLLM=${useLLM} patients=${parsedPatients.length}`);
+        
+        if (useLLM) {
           setOcrProgress(75);
           setUsingLLM(true);
           
@@ -513,13 +553,13 @@ export default function MassiveLoader({ onBatchLoaded }: MassiveLoaderProps) {
       if (patients.length > 0) {
         onBatchLoaded(patients);
       } else {
-        alert("No se pudieron extraer datos de la imagen. Por favor intente con una foto más nítida o ingrese manualmente.");
+        onToast?.("No se pudieron extraer datos de la imagen. Intente con una foto más nítida o ingrese los datos manualmente.");
       }
       setOcrLoading(false);
       setOcrStep("");
     } catch (err) {
       console.error(err);
-      alert("Error durante el procesamiento OCR.");
+      onToast?.("Error durante el procesamiento OCR. Revise la consola para más detalles.");
       setOcrLoading(false);
       setOcrStep("");
     }
