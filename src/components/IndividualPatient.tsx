@@ -5,8 +5,8 @@
 
 import React, { useState, useEffect } from "react";
 import { Hospital, Paciente } from "../types";
-import { createPaciente, searchPacientes, updatePaciente } from "../utils/api";
-import { Search, Plus, UserPlus, CheckCircle, RefreshCw, AlertTriangle, ShieldCheck } from "lucide-react";
+import { deduplicatePacientes, searchPacientes, updatePaciente } from "../utils/api";
+import { Search, Plus, UserPlus, CheckCircle, RefreshCw, AlertTriangle, ShieldCheck, GitMerge } from "lucide-react";
 
 interface IndividualPatientProps {
   hospitales: Hospital[];
@@ -28,6 +28,7 @@ export default function IndividualPatient({ hospitales, onPatientMutated }: Indi
   const [ingresoSuccess, setIngresoSuccess] = useState(false);
   const [ingresoLoading, setIngresoLoading] = useState(false);
   const [ingresoError, setIngresoError] = useState("");
+  const [dedupResult, setDedupResult] = useState<{ accion: string; id: number; campos?: string[]; matchTipo?: string } | null>(null);
 
   // --- BÚSQUEDA Y ACTUALIZACIÓN STATE ---
   const [searchQuery, setSearchQuery] = useState("");
@@ -76,23 +77,48 @@ export default function IndividualPatient({ hospitales, onPatientMutated }: Indi
     setIngresoLoading(true);
     setIngresoError("");
     setIngresoSuccess(false);
+    setDedupResult(null);
 
     try {
       const payload = {
-        nombre: nombre.trim(),
-        cedula: cedula.trim() || undefined,
-        edad: edad ? parseInt(edad, 10) : undefined,
-        sexo,
-        procedencia: procedencia.trim() || undefined,
+        fuente: "formulario_individual",
         hospital_id: hospitalId ? parseInt(hospitalId, 10) : null,
-        hospital_nuevo: hospitalId === "" ? hospitalNuevo.trim() || "Otros" : undefined,
+        hospital_nuevo: hospitalId === "" ? hospitalNuevo.trim() || undefined : undefined,
         ingreso_fecha: ingresoFecha,
-        estado,
+        pacientes: [{
+          nombre: nombre.trim(),
+          cedula: cedula.trim() || undefined,
+          edad: edad ? parseInt(edad, 10) : undefined,
+          sexo,
+          procedencia: procedencia.trim() || undefined,
+          estado,
+        }],
       };
 
-      const res = await createPaciente(payload);
-      if (res.ok) {
-        setIngresoSuccess(true);
+      const report = await deduplicatePacientes(payload);
+      
+      if (report.ok && report.detalle.length > 0) {
+        const result = report.detalle[0];
+        
+        if (result.accion === "nuevo") {
+          setIngresoSuccess(true);
+          setDedupResult({ accion: "nuevo", id: result.id });
+        } else if (result.accion === "merge") {
+          setIngresoSuccess(true);
+          setDedupResult({
+            accion: "merge",
+            id: result.id,
+            campos: result.campos_agregados,
+            matchTipo: result.match_tipo,
+          });
+        } else if (result.accion === "sin_cambios") {
+          setIngresoSuccess(true);
+          setDedupResult({ accion: "sin_cambios", id: result.id, matchTipo: result.match_tipo });
+        } else {
+          setIngresoError(result.motivo || "Error desconocido en deduplicación.");
+          return;
+        }
+
         setNombre("");
         setCedula("");
         setEdad("");
@@ -101,10 +127,9 @@ export default function IndividualPatient({ hospitales, onPatientMutated }: Indi
         setHospitalId("");
         setHospitalNuevo("");
         onPatientMutated();
-        // Clear success message after 4s
-        setTimeout(() => setIngresoSuccess(false), 4000);
+        setTimeout(() => { setIngresoSuccess(false); setDedupResult(null); }, 6000);
       } else {
-        setIngresoError(res.error || "No se pudo registrar al paciente.");
+        setIngresoError(report.detalle?.[0]?.motivo || "No se pudo procesar al paciente.");
       }
     } catch (err: any) {
       setIngresoError(err.message || "Error de red al intentar registrar.");
@@ -317,10 +342,32 @@ export default function IndividualPatient({ hospitales, onPatientMutated }: Indi
             </div>
           )}
 
-          {ingresoSuccess && (
-            <div className="bg-sky-50 border border-sky-200 text-sky-800 text-xs rounded-lg p-3 flex items-center space-x-2">
-              <CheckCircle className="w-4 h-4 text-sky-600" />
-              <span>¡Paciente registrado en base de datos con éxito!</span>
+          {ingresoSuccess && dedupResult && (
+            <div className={`text-xs rounded-lg p-3 flex items-start space-x-2 ${
+              dedupResult.accion === "merge" 
+                ? "bg-amber-50 border border-amber-200 text-amber-800" 
+                : dedupResult.accion === "sin_cambios"
+                ? "bg-slate-50 border border-slate-200 text-slate-700"
+                : "bg-sky-50 border border-sky-200 text-sky-800"
+            }`}>
+              {dedupResult.accion === "nuevo" && <CheckCircle className="w-4 h-4 text-sky-600 shrink-0 mt-0.5" />}
+              {dedupResult.accion === "merge" && <GitMerge className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />}
+              {dedupResult.accion === "sin_cambios" && <CheckCircle className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" />}
+              <span>
+                {dedupResult.accion === "nuevo" && `✅ Paciente registrado como nuevo (ID: ${dedupResult.id})`}
+                {dedupResult.accion === "merge" && (
+                  <>
+                    🔄 <strong>Datos fusionados</strong> con paciente existente (ID: {dedupResult.id})
+                    {dedupResult.matchTipo && <> — vía {dedupResult.matchTipo === "cedula" ? "cédula" : "similitud de nombre"}</>}
+                    {dedupResult.campos && dedupResult.campos.length > 0 && (
+                      <> · Campos agregados: <strong>{dedupResult.campos.join(", ")}</strong></>
+                    )}
+                  </>
+                )}
+                {dedupResult.accion === "sin_cambios" && (
+                  <>ℹ️ Sin cambios: los datos son idénticos al registro existente (ID: {dedupResult.id})</>
+                )}
+              </span>
             </div>
           )}
 

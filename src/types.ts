@@ -65,3 +65,24 @@ export interface LoteResultado {
   id?: number;
   motivo?: string;
 }
+
+/** Reporte del motor de deduplicación */
+export interface DedupDetail {
+  fila: number;
+  nombre: string;
+  accion: "nuevo" | "merge" | "sin_cambios" | "error";
+  id: number;
+  match_tipo?: "cedula" | "fuzzy";
+  campos_agregados?: string[];
+  motivo?: string;
+}
+
+export interface DedupReport {
+  ok: boolean;
+  total_recibidos: number;
+  nuevos: number;
+  mergeados: number;
+  sin_cambios: number;
+  errores: number;
+  detalle: DedupDetail[];
+}

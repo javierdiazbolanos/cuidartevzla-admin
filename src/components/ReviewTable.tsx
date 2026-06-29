@@ -4,9 +4,9 @@
  */
 
 import React, { useState, useEffect } from "react";
-import { Hospital, Paciente, ParsedPaciente } from "../types";
-import { postPacientesLote } from "../utils/api";
-import { Trash2, Plus, Download, Send, CheckSquare, Square, AlertTriangle, HelpCircle, Sparkles } from "lucide-react";
+import { Hospital, Paciente, ParsedPaciente, DedupReport } from "../types";
+import { deduplicatePacientes } from "../utils/api";
+import { Trash2, Plus, Download, Send, CheckSquare, Square, AlertTriangle, HelpCircle, Sparkles, GitMerge, UserPlus } from "lucide-react";
 
 interface ReviewTableProps {
   initialPatients: ParsedPaciente[];
@@ -30,12 +30,10 @@ export default function ReviewTable({
   const [globalHospitalId, setGlobalHospitalId] = useState<string>("");
   const [globalIngresoFecha, setGlobalIngresoFecha] = useState(new Date().toISOString().split("T")[0]);
   
-  // Smart duplicates config
-  const [updateOnDuplicate, setUpdateOnDuplicate] = useState(true);
-  
   // State for upload process
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
+  const [lastReport, setLastReport] = useState<DedupReport | null>(null);
 
   // Sync state with incoming loader lists
   useEffect(() => {
@@ -58,7 +56,7 @@ export default function ReviewTable({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [patients, selectedIds, isUploading, globalHospitalId, globalIngresoFecha, updateOnDuplicate]);
+  }, [patients, selectedIds, isUploading, globalHospitalId, globalIngresoFecha]);
 
   // Inline grid cell mutation
   const handleCellChange = (id: string, field: keyof ParsedPaciente, value: any) => {
@@ -198,7 +196,7 @@ export default function ReviewTable({
     document.body.removeChild(link);
   };
 
-  // Submit selected batch rows to PHP REST Backend
+  // Submit selected batch rows to PHP Dedup Engine
   const handleSubmitBatch = async () => {
     if (selectedIds.size === 0) {
       setUploadError("Debe seleccionar al menos un paciente para realizar la carga masiva.");
@@ -207,6 +205,7 @@ export default function ReviewTable({
 
     setIsUploading(true);
     setUploadError("");
+    setLastReport(null);
 
     // Prepare list of patients to upload
     const selectedPatients = patients.filter((p) => selectedIds.has(p.id_temporal));
@@ -221,6 +220,7 @@ export default function ReviewTable({
 
     try {
       const payload = {
+        fuente: "carga_masiva_admin",
         hospital_id: globalHospitalId ? parseInt(globalHospitalId, 10) : null,
         hospital_nuevo: globalHospitalId === "" ? "Ambulatorio Temporal / Desconocido" : undefined,
         ingreso_fecha: globalIngresoFecha,
@@ -230,37 +230,36 @@ export default function ReviewTable({
           edad: p.edad,
           sexo: p.sexo,
           procedencia: p.procedencia?.trim() || undefined,
+          estado: "hospitalizado",
         })),
-        updateOnDuplicate, // Include duplicate handling logic
       };
 
-      const res = await postPacientesLote(payload);
-      if (res.ok) {
-        // Compile summary results
-        const stats = res.resultados.reduce(
-          (acc: any, curr: any) => {
-            acc[curr.status] = (acc[curr.status] || 0) + 1;
-            return acc;
-          },
-          { creado: 0, duplicado: 0, actualizado: 0, error: 0 }
-        );
+      const report = await deduplicatePacientes(payload);
+      setLastReport(report);
 
-        const summaryText = `Lote procesado. Resultados: ${stats.creado} Nuevos admisiones, ${stats.actualizado} Actualizados/Fusiones inteligentes, ${stats.duplicado} Duplicados rechazados, ${stats.error} Errores.`;
-        
-        // Filter out successfully processed patients from review grid
+      if (report.ok) {
+        // Remove successfully processed patients from the review grid
         const successRowsMap = new Set(
-          res.resultados
-            .filter((r: any) => r.status === "creado" || r.status === "actualizado")
-            .map((r: any) => selectedPatients[r.fila - 1]?.id_temporal)
+          report.detalle
+            .filter((r) => r.accion === "nuevo" || r.accion === "merge")
+            .map((r) => selectedPatients[r.fila - 1]?.id_temporal)
+            .filter(Boolean)
         );
 
         const remaining = patients.filter((p) => !successRowsMap.has(p.id_temporal));
         setPatients(remaining);
         setSelectedIds(new Set());
-        
-        onBatchSubmitted(summaryText);
+
+        const summaryText = [
+          `✅ ${report.nuevos} nuevos`,
+          report.mergeados > 0 ? `🔄 ${report.mergeados} fusionados` : null,
+          report.sin_cambios > 0 ? `ℹ️ ${report.sin_cambios} sin cambios` : null,
+          report.errores > 0 ? `⚠️ ${report.errores} errores` : null,
+        ].filter(Boolean).join(" · ");
+
+        onBatchSubmitted(`Lote procesado: ${summaryText} (${report.total_recibidos} total)`);
       } else {
-        setUploadError("Error en respuesta de servidor al cargar lote.");
+        setUploadError("Error en la respuesta del motor de deduplicación.");
       }
     } catch (err: any) {
       setUploadError(err.message || "Error de conexión con el backend.");
@@ -503,27 +502,43 @@ export default function ReviewTable({
         </table>
       </div>
 
-      {/* FOOTER BULK TRIGGER & SMART OVERWRITES TOGGLE */}
+      {/* FOOTER: DEDUP REPORT + BULK TRIGGER */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pt-4 border-t border-slate-200">
         
-        {/* Toggle to allow update/merging instead of failing on duplicates */}
-        <label className="flex items-start space-x-2.5 text-xs text-slate-500 max-w-xl cursor-pointer select-none text-left">
-          <input
-            type="checkbox"
-            checked={updateOnDuplicate}
-            onChange={(e) => setUpdateOnDuplicate(e.target.checked)}
-            className="mt-0.5 text-sky-600 focus:ring-0 rounded bg-white border-slate-300 w-4 h-4 cursor-pointer"
-          />
-          <div>
-            <span className="font-semibold text-slate-800 flex items-center space-x-1">
-              <span>Resolución de Duplicados Inteligente</span>
-              <span className="bg-sky-50 text-sky-700 border border-sky-200 text-[9px] px-1.5 py-0.2 rounded font-mono font-bold uppercase font-semibold">Recomendado</span>
+        {/* Dedup Report Summary (appears after submission) */}
+        {lastReport && lastReport.ok && (
+          <div className="flex items-center space-x-4 text-xs text-slate-600 flex-wrap gap-y-1">
+            <span className="flex items-center space-x-1 font-semibold text-sky-700">
+              <UserPlus className="w-3.5 h-3.5" />
+              <span>{lastReport.nuevos} nuevos</span>
             </span>
-            <p className="text-[11px] text-slate-400 mt-0.5">
-              Si se encuentra una coincidencia exacta de Cédula o Nombre en el sistema, actualizar sus datos médicos y estado hospitalario en vez de descartar la fila.
-            </p>
+            {lastReport.mergeados > 0 && (
+              <span className="flex items-center space-x-1 font-semibold text-amber-700">
+                <GitMerge className="w-3.5 h-3.5" />
+                <span>{lastReport.mergeados} fusionados</span>
+              </span>
+            )}
+            {lastReport.sin_cambios > 0 && (
+              <span className="flex items-center space-x-1 text-slate-500">
+                <CheckSquare className="w-3.5 h-3.5" />
+                <span>{lastReport.sin_cambios} sin cambios</span>
+              </span>
+            )}
+            {lastReport.errores > 0 && (
+              <span className="flex items-center space-x-1 text-rose-600">
+                <AlertTriangle className="w-3.5 h-3.5" />
+                <span>{lastReport.errores} errores</span>
+              </span>
+            )}
+            <span className="text-slate-400">· {lastReport.total_recibidos} total</span>
           </div>
-        </label>
+        )}
+        {!lastReport && (
+          <div className="text-xs text-slate-400 italic">
+            El motor de deduplicación detecta duplicados por cédula exacta y similitud de nombre ≥85%. 
+            Los registros existentes se <strong className="text-slate-600">enriquecen</strong> automáticamente con nuevos datos.
+          </div>
+        )}
 
         {/* Sync Trigger and stats */}
         <div className="flex items-center space-x-3 self-end lg:self-auto">
