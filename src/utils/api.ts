@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Hospital, Paciente, Transporte } from "../types";
+import { Hospital, Paciente, Transporte, DedupReport } from "../types";
 
 let API_BASE = "/api";
 let detectedIP = "0.0.0.0";
@@ -414,6 +414,81 @@ export async function postPacientesLote(payload: {
     ok: result.ok,
     resultados: result.resultados || [],
   };
+}
+
+/**
+ * Envía pacientes al motor de deduplicación (nuevo endpoint inteligente).
+ * Soporta tanto paciente individual como lotes. Detecta duplicados con dos niveles:
+ * cédula exacta + fuzzy (nombre/hospital/edad) y enriquece registros existentes.
+ * 
+ * @returns DedupReport con conteo de nuevos, mergeados, sin_cambios, errores
+ */
+export async function deduplicatePacientes(payload: {
+  fuente?: string;
+  hospital_id?: number | null;
+  hospital_nuevo?: string;
+  ingreso_fecha?: string;
+  pacientes: {
+    nombre: string;
+    cedula?: string;
+    edad?: number;
+    sexo: "Masculino" | "Femenino" | "Desconocido";
+    procedencia?: string;
+    estado?: string;
+  }[];
+}): Promise<DedupReport> {
+  const bodyPayload = {
+    fuente: payload.fuente || "admin_web",
+    hospital_id: payload.hospital_id,
+    hospital_nuevo: payload.hospital_nuevo,
+    ingreso_fecha: payload.ingreso_fecha,
+    pacientes: payload.pacientes,
+  };
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (volunteerCode) {
+    headers["X-Codigo-Voluntario"] = volunteerCode;
+  }
+
+  console.log("[API CALL] POST /deduplicate.php", {
+    pacientesCount: payload.pacientes.length,
+  });
+
+  try {
+    const res = await fetch(`${API_BASE}/deduplicate.php`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(bodyPayload),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      return data as DedupReport;
+    }
+
+    const errorData = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+    throw new Error(errorData.error || `Error del servidor (${res.status})`);
+  } catch (err: any) {
+    console.error("[Dedup] Error:", err);
+    // Fallback: retornar un reporte de error
+    return {
+      ok: false,
+      total_recibidos: payload.pacientes.length,
+      nuevos: 0,
+      mergeados: 0,
+      sin_cambios: 0,
+      errores: payload.pacientes.length,
+      detalle: payload.pacientes.map((p, i) => ({
+        fila: i + 1,
+        nombre: p.nombre,
+        accion: "error" as const,
+        id: 0,
+        motivo: err.message || "Error de conexión",
+      })),
+    };
+  }
 }
 
 export async function getTransportes(): Promise<Transporte[]> {
