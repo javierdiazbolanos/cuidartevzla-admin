@@ -9,3 +9,7 @@
   Header set Pragma "no-cache"
   Header set Expires 0
 </IfModule>
+
+RewriteEngine On
+RedirectMatch 301 ^/voluntario$ /voluntarios
+RedirectMatch 301 ^/voluntarios$ /voluntarios/

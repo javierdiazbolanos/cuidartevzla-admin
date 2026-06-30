@@ -1,0 +1,23 @@
+{
+  "name": "Cuídarte Venezuela",
+  "short_name": "Cuídarte VE",
+  "description": "Búsqueda de pacientes y medicamentos disponibles tras el sismo de junio de 2026.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0284c7",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "https://images.unsplash.com/photo-1544027993-37dbfe43562a?auto=format&fit=crop&w=192&h=192&q=80",
+      "sizes": "192x192",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "https://images.unsplash.com/photo-1544027993-37dbfe43562a?auto=format&fit=crop&w=512&h=512&q=80",
+      "sizes": "512x512",
+      "type": "image/jpeg"
+    }
+  ]
+}
