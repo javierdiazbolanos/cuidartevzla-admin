@@ -5,15 +5,16 @@
 
 import React, { useState, useEffect } from "react";
 import { Hospital, Paciente } from "../types";
-import { deduplicatePacientes, searchPacientes, updatePaciente, isAuthorized } from "../utils/api";
+import { deduplicatePacientes, searchPacientes, updatePaciente } from "../utils/api";
 import { Search, Plus, UserPlus, CheckCircle, RefreshCw, AlertTriangle, ShieldCheck, GitMerge } from "lucide-react";
 
 interface IndividualPatientProps {
   hospitales: Hospital[];
-  onPatientMutated: () => void; // Reload lists
+  onPatientMutated: () => void;
+  authorized: boolean;
 }
 
-export default function IndividualPatient({ hospitales, onPatientMutated }: IndividualPatientProps) {
+export default function IndividualPatient({ hospitales, onPatientMutated, authorized }: IndividualPatientProps) {
   // --- INGRESO INDIVIDUAL INPUT STATE ---
   const [nombre, setNombre] = useState("");
   const [cedula, setCedula] = useState("");
@@ -105,7 +106,7 @@ export default function IndividualPatient({ hospitales, onPatientMutated }: Indi
       const report = await deduplicatePacientes(payload);
       
       if (report.ok && report.detalle.length > 0) {
-        const result = report.detale[0];
+        const result = report.detalle[0];
         
         if (result.accion === "nuevo") {
           setIngresoSuccess(true);
@@ -136,7 +137,7 @@ export default function IndividualPatient({ hospitales, onPatientMutated }: Indi
         onPatientMutated();
         setTimeout(() => { setIngresoSuccess(false); setDedupResult(null); }, 6000);
       } else {
-        setIngresoError(report.detale?.[0]?.motivo || "No se pudo procesar al paciente.");
+        setIngresoError(report.detalle?.[0]?.motivo || "No se pudo procesar al paciente.");
       }
     } catch (err: any) {
       setIngresoError(err.message || "Error de red al intentar registrar.");
@@ -429,7 +430,7 @@ export default function IndividualPatient({ hospitales, onPatientMutated }: Indi
         </form>
         
         {/* MAINTENANCE SECTION */}
-        {isAuthorized() && (
+        {authorized && (
           <div className="mt-6 pt-4 border-t border-slate-200">
             <h3 className="text-lg font-bold text-slate-800 mb-4">Utilidades de Mantenimiento</h3>
             <p className="text-sm text-slate-500 mb-2">

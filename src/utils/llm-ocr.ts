@@ -118,42 +118,82 @@ export function avgBatchConfidence(patients: ParsedPaciente[]): number {
 }
 
 /**
- * Decide si se debe usar fallback LLM basado en:
- * - 0 pacientes detectados por Tesseract → SIEMPRE intentar LLM
- * - Confianza promedio < 85% (umbral alto porque Tesseract sobrestima en español)
- * - Nombres con calidad sospechosa (>40% parecen basura OCR)
- * - Muy pocos pacientes extraídos (< 3)
+ * Decide si se debe usar fallback LLM basado en múltiples heurísticas:
+ * 
+ * Reglas (cualquiera dispara LLM):
+ *   1. 0 pacientes → SIEMPRE intentar LLM
+ *   2. Confianza promedio < 75% (bajado de 85%, Tesseract infla confianza en español)
+ *   3. Algún nombre con signos de truncamiento (última palabra 1-2 letras)
+ *   4. >30% de nombres parecen basura OCR (consonantes sin vocales)
+ *   5. < 3 pacientes extraídos de una página que debería tener varios
+ *   6. Algún nombre contiene secuencias de consonantes imposibles (ej: "VLLGS")
  *
  * NOTA: Ya NO depende de API key frontend — el backend maneja eso.
  */
 export function shouldUseLLMFallback(patients: ParsedPaciente[]): boolean {
-  // Si Tesseract no encontró nada en absoluto, intentar LLM
+  // Regla 1: Si Tesseract no encontró nada en absoluto
   if (patients.length === 0) return true;
 
   const avgConf = avgBatchConfidence(patients);
 
-  // Regla 1: Confianza promedio baja
-  if (avgConf < 85) return true;
+  // Regla 2: Confianza promedio baja (umbral más agresivo — 75% en vez de 85%)
+  if (avgConf < 75) return true;
 
-  // Regla 2: Calidad de nombres sospechosa (>40% son basura)
+  // Regla 3: Detectar nombres truncados (última palabra de 1-2 caracteres)
+  //    Ej: "VILLEGAS VILLAMAR BRAYAN JO" → "JO" es truncamiento de "JOSE"
+  const truncatedCount = patients.filter((p) => hasTruncatedName(p.nombre)).length;
+  if (truncatedCount > 0) return true;
+
+  // Regla 4: Calidad de nombres sospechosa (>30% son basura)
   const garbageCount = patients.filter((p) => isLikelyOCRGarbage(p.nombre)).length;
-  if (garbageCount > patients.length * 0.4) return true;
+  if (garbageCount > patients.length * 0.3) return true;
 
-  // Regla 3: Muy pocos pacientes para una página que debería tener varios
+  // Regla 5: Muy pocos pacientes para una página
   if (patients.length < 3) return true;
+
+  // Regla 6: Algún nombre contiene secuencias de 4+ consonantes (imposible en español)
+  const hasImpossibleCluster = patients.some((p) => {
+    const cleaned = p.nombre.replace(/\s/g, "");
+    return /[BCDFGHJKLMNPQRSTVWXYZ]{4,}/i.test(cleaned);
+  });
+  if (hasImpossibleCluster) return true;
 
   return false;
 }
 
 /**
- * Detecta si un nombre extraído por OCR probablemente es basura
- * (consonantes sin vocales, texto sin sentido)
+ * Detecta si un nombre tiene su última palabra truncada (1-2 caracteres).
+ * "VILLEGAS VILLAMAR BRAYAN JO" → true (última palabra "JO")
+ * "VILCHEZ VILLALOBOS BRAYAN JOSE" → false
+ */
+function hasTruncatedName(name: string): boolean {
+  if (!name || name.length < 3) return false;
+  const tokens = name.trim().split(/\s+/);
+  if (tokens.length === 0) return false;
+  const lastToken = tokens[tokens.length - 1];
+  // Última palabra de 1-2 caracteres Y hay al menos 2 palabras más → truncamiento
+  return lastToken.length <= 2 && tokens.length >= 3;
+}
+
+/**
+ * Detecta si un nombre extraído por OCR probablemente es basura.
+ * Mejorado: ahora también detecta clusters de 3+ consonantes consecutivas
+ * y nombres con ratio vocal/consonante invertido.
  */
 function isLikelyOCRGarbage(name: string): boolean {
   if (!name || name.length < 3) return true;
   const cleaned = name.replace(/\s/g, "");
   const vowels = (cleaned.match(/[aeiouáéíóúüAEIOUÁÉÍÓÚÜ]/g) || []).length;
   const ratio = vowels / cleaned.length;
-  // Menos del 20% de vocales en un nombre > 4 letras = basura
-  return ratio < 0.2 && cleaned.length > 4;
+  
+  // Menos del 20% de vocales en > 4 letras
+  if (ratio < 0.2 && cleaned.length > 4) return true;
+  
+  // Clusters de 3+ consonantes en una palabra (ej: "VLLG" en "VLLEGAS")
+  const words = name.split(/\s+/);
+  for (const word of words) {
+    if (/[BCDFGHJKLMNPQRSTVWXYZ]{3,}/i.test(word)) return true;
+  }
+  
+  return false;
 }

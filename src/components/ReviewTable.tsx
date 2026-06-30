@@ -230,11 +230,12 @@ export default function ReviewTable({
           edad: p.edad,
           sexo: p.sexo,
           procedencia: p.procedencia?.trim() || undefined,
-          estado: "hospitalizado",
+          estado: p.estado || "hospitalizado",
         })),
       };
 
       const report = await deduplicatePacientes(payload);
+      console.log("[Dedup] Report completo:", report);
       setLastReport(report);
 
       if (report.ok) {
@@ -357,11 +358,14 @@ export default function ReviewTable({
                   )}
                 </button>
               </th>
-              <th className="p-3">Nombre Completo <span className="text-rose-600 font-bold">*</span></th>
-              <th className="p-3 w-32">Cédula</th>
-              <th className="p-3 w-20">Edad</th>
-              <th className="p-3 w-32">Sexo</th>
-              <th className="p-3">Procedencia / Sector</th>
+              {/* Cell: ID consecutivo */}
+                <th className="p-2 text-center font-mono text-xs text-slate-400/70 w-10">#</th>
+            <th className="p-3 min-w-[180px]">Nombre Completo <span className="text-rose-600 font-bold">*</span></th>
+              <th className="p-3 w-28">Cédula</th>
+              <th className="p-3 w-14">Edad</th>
+              <th className="p-3 w-20">Sexo</th>
+              <th className="p-3 w-28">Procedencia</th>
+              <th className="p-3 w-24">Estado</th>
               <th className="p-3 w-24 text-center">OCR Conf.</th>
               <th className="p-3 text-center w-16">Acción</th>
             </tr>
@@ -391,6 +395,11 @@ export default function ReviewTable({
                         <Square className="w-4 h-4" />
                       )}
                     </button>
+                  </td>
+
+                  {/* Cell: ID consecutivo */}
+                  <td className="p-2 text-center font-mono text-xs text-slate-400/50">
+                    {patients.indexOf(p) + 1}
                   </td>
 
                   {/* Cell: Full Name */}
@@ -464,9 +473,30 @@ export default function ReviewTable({
                       type="text"
                       value={p.procedencia || ""}
                       onChange={(e) => handleCellChange(p.id_temporal, "procedencia", e.target.value)}
-                      placeholder="No registrado"
-                      className="w-full bg-slate-50/50 focus:bg-white border border-transparent focus:border-sky-500 rounded px-2.5 py-1 text-sm text-slate-800"
+                      placeholder="-"
+                      className="w-full bg-slate-50/50 focus:bg-white border border-transparent focus:border-sky-500 rounded px-1.5 py-1 text-xs text-slate-800"
                     />
+                  </td>
+
+                  {/* Cell: Estado / Motivo */}
+                  <td className="p-2">
+                    <select
+                      value={p.estado || "desconocido"}
+                      onChange={(e) => handleCellChange(p.id_temporal, "estado", e.target.value as any)}
+                      className={`w-full bg-slate-50/50 focus:bg-white border border-transparent focus:border-sky-500 rounded px-1.5 py-1.5 text-xs ${
+                        p.estado === "fallecido" ? "text-rose-700 font-semibold" :
+                        p.estado === "alta" ? "text-emerald-700 font-semibold" :
+                        p.estado === "referido" ? "text-amber-700 font-semibold" :
+                        p.estado === "hospitalizado" ? "text-sky-700 font-semibold" :
+                        "text-slate-500"
+                      }`}
+                    >
+                      <option value="desconocido">Desconocido</option>
+                      <option value="hospitalizado">Hospitalizado</option>
+                      <option value="alta">Alta</option>
+                      <option value="referido">Referido</option>
+                      <option value="fallecido">Fallecido</option>
+                    </select>
                   </td>
 
                   {/* Cell: OCR Confidence level */}

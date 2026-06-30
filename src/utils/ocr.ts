@@ -118,8 +118,17 @@ export async function getTesseractWorker(onProgress?: (pct: number) => void): Pr
 }
 
 /**
- * Preprocess image with OpenCV.js (adaptive thresholding, grayscale, deskew)
- * Falls back to HTML5 Canvas 2D if OpenCV is not loaded
+ * Preprocess image with OpenCV.js (upscale → grayscale)
+ * Falls back to HTML5 Canvas 2D if OpenCV is not loaded.
+ *
+ * Pipeline (when OpenCV available):
+ *   1. Optional upscale 4× if image < 1200px (using LANCZOS4 or CUBIC interpolation)
+ *   2. Grayscale
+ *
+ * Pipeline (when OpenCV not available - Canvas 2D fallback):
+ *   1. Optional upscale 4× if image < 1200px (using CSS imageSmoothingQuality)
+ *   2. Grayscale (via luminance)
+ *   3. No additional filtering (we rely on Tesseract's internal preprocessing)
  */
 export function preprocessImage(
   imageEl: HTMLImageElement | HTMLVideoElement,
@@ -129,77 +138,87 @@ export function preprocessImage(
   if (!ctx) return false;
 
   // Set canvas size to match image/video source
-  const width = imageEl instanceof HTMLVideoElement ? imageEl.videoWidth : imageEl.naturalWidth;
-  const height = imageEl instanceof HTMLVideoElement ? imageEl.videoHeight : imageEl.naturalHeight;
-  
+  let width = imageEl instanceof HTMLVideoElement ? imageEl.videoWidth : imageEl.naturalWidth;
+  let height = imageEl instanceof HTMLVideoElement ? imageEl.videoHeight : imageEl.naturalHeight;
+
   if (width === 0 || height === 0) return false;
+
+  // ---------- OPTIONAL UPSCALE ----------
+  const MIN_DIMENSION = 1200;
+  let scaleFactor = 1.0;
+  const needsUpscale = Math.max(width, height) < MIN_DIMENSION;
+  if (needsUpscale) {
+    scaleFactor = 4.0; // upscale 4× for tiny scans/photos
+    width = Math.round(width * scaleFactor);
+    height = Math.round(height * scaleFactor);
+  }
   outputCanvas.width = width;
   outputCanvas.height = height;
 
-  // Draw original image first
+  // Draw original (upscaled if needed) onto canvas for further processing
+  ctx.imageSmoothingEnabled = true;
+  // Try to use high-quality resizing if available via CSS; but we'll rely on OpenCV resize later.
   ctx.drawImage(imageEl, 0, 0, width, height);
 
-  // Attempt OpenCV processing
+  // ---------- OPENCV PROCESSING ----------
   if (isOpenCVLoaded()) {
     try {
       const cv = (window as any).cv;
-      const src = cv.imread(outputCanvas);
-      const dst = new cv.Mat();
+      const src = cv.imread(outputCanvas); // RGBA uchar Mat
 
-      // 1. Grayscale
-      cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
+      // 1. Upscale if needed (using high-quality interpolation)
+      let resized = src;
+      if (needsUpscale) {
+        // Try to use LANCZOS4 if defined, else fallback to CUBIC
+        const interp = typeof cv.INTER_LANCZOS4 !== 'undefined' ? cv.INTER_LANCZOS4 : cv.INTER_CUBIC;
+        resized = new cv.Mat();
+        cv.resize(src, resized, new cv.Size(width, height), 0, 0, interp);
+        src.delete(); // free original
+      }
 
-      // 2. Adaptive Thresholding to remove shadows & enhance paper text
-      // cv.adaptiveThreshold(src, dst, maxValue, adaptiveMethod, thresholdType, blockSize, C)
-      cv.adaptiveThreshold(
-        dst,
-        dst,
-        255,
-        cv.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv.THRESH_BINARY,
-        15,
-        5
-      );
+      // 2. Grayscale
+      const gray = new cv.Mat();
+      cv.cvtColor(resized, gray, cv.COLOR_RGBA2GRAY);
 
-      // 3. Simple deskew (Optional, check if we have angle of text and rotate)
-      // For general purposes, binarization and cleaning are the most impactful.
-      
-      cv.imshow(outputCanvas, dst);
+      // Show result (grayscale image)
+      cv.imshow(outputCanvas, gray);
 
       // Clean up Mats
-      src.delete();
-      dst.delete();
-      console.log("Image processed with OpenCV.js (Adaptive Thresholding + Grayscale)");
+      resized.delete(); gray.delete();
+
+      console.log(
+        `Image processed with OpenCV.js — upscale=${needsUpscale ? '4×' : '1×'} → ` +
+        `Grayscale (${width}x${height})`
+      );
       return true;
     } catch (err) {
       console.error("OpenCV processing failed, falling back to Canvas 2D:", err);
     }
   }
 
-  // Fallback: Pure Canvas 2D filters for High-contrast grayscale
+  // ---------- FALLBACK: Pure Canvas 2D ----------
   try {
     const imgData = ctx.getImageData(0, 0, width, height);
     const data = imgData.data;
-    
-    // Grayscale + High Contrast Thresholding
+
+    // Grayscale conversion (luminance)
     for (let i = 0; i < data.length; i += 4) {
       const r = data[i];
       const g = data[i + 1];
       const b = data[i + 2];
-      // Luminance formula
       const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-      
-      // Simple threshold binarization (fallback)
-      const v = gray > 125 ? 255 : 0;
-      data[i] = v;
-      data[i + 1] = v;
-      data[i + 2] = v;
+      data[i] = gray;
+      data[i + 1] = gray;
+      data[i + 2] = gray;
     }
     ctx.putImageData(imgData, 0, 0);
-    console.log("Image processed with Canvas 2D fallback filters (Grayscale + Threshold)");
+    console.log(
+      `Image processed with Canvas 2D fallback — upscale=${needsUpscale ? '4×' : '1×'} → ` +
+      `Grayscale (${width}x${height})`
+    );
     return true;
   } catch (err) {
-    console.error("Canvas binarization fallback failed:", err);
+    console.error("Canvas grayscale fallback failed:", err);
     return false;
   }
 }

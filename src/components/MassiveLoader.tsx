@@ -209,27 +209,28 @@ export default function MassiveLoader({ onBatchLoaded, onToast }: MassiveLoaderP
           setOcrProgress(15);
           
           const allPatients: ParsedPaciente[] = [];
-          
-          for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-            setOcrStep(`Renderizando página ${pageNum} de ${totalPages} para OCR...`);
-            setOcrProgress(15 + Math.round((pageNum / totalPages) * 15));
-            
-            const page = await pdf.getPage(pageNum);
-            const viewport = page.getViewport({ scale: 2.0 });
-            
-            const offCanvas = document.createElement("canvas");
-            offCanvas.width = viewport.width;
-            offCanvas.height = viewport.height;
-            const offCtx = offCanvas.getContext("2d")!;
-            
-            await page.render({
-              canvasContext: offCtx,
-              viewport: viewport,
-            }).promise;
-            
-            const pagePatients = await processOCRCanvasPage(offCanvas, pageNum, totalPages, true);
-            allPatients.push(...pagePatients);
-          }
+
+                    for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+                      setOcrStep(`Renderizando página ${pageNum} de ${totalPages} para OCR...`);
+                      setOcrProgress(15 + Math.round((pageNum / totalPages) * 15));
+
+                      const page = await pdf.getPage(pageNum);
+                      const viewport = page.getViewport({ scale: 2.0 });
+
+                      const offCanvas = document.createElement("canvas");
+                      offCanvas.width = viewport.width;
+                      offCanvas.height = viewport.height;
+                      const offCtx = offCanvas.getContext("2d")!;
+
+                      await page.render({
+                        canvasContext: offCtx,
+                        viewport: viewport,
+                      }).promise;
+
+                      const pagePatients = await processOCRCanvasPage(offCanvas, pageNum, totalPages, true);
+                      console.log(`[PDF PROCESS] Página ${pageNum}/${totalPages}: ${pagePatients.length} pacientes extraídos`);
+                      allPatients.push(...pagePatients);
+                    }
           
           if (allPatients.length > 0) {
             onBatchLoaded(allPatients);
@@ -299,14 +300,16 @@ export default function MassiveLoader({ onBatchLoaded, onToast }: MassiveLoaderP
       edad: -1,
       sexo: -1,
       procedencia: -1,
+      estado: -1,
     };
 
     const firstRow = matrix[0].map((h) => String(h).toLowerCase().trim());
     
     // Check if first row looks like header keywords
-    const isHeaderRow = firstRow.some((h) =>
-      /nombre|completo|cedula|cédula|edad|sexo|genero|procedencia|origen|municipio/.test(h)
-    );
+        const isHeaderRow = firstRow.some((h) => 
+          /nombre|completo|cedula|cédula|edad|sexo|genero|procedencia|origen|municipio|motivo|estado|condicion|status|observacion/i.test(h)
+        );
+        // Note: columns named "motivo", "estado", "condicion", etc. are all treated as the patient's estado field.
 
     let startRow = 0;
     if (isHeaderRow) {
@@ -317,6 +320,7 @@ export default function MassiveLoader({ onBatchLoaded, onToast }: MassiveLoaderP
         else if (/edad|años|anos|age/.test(h)) headersIndexMap.edad = index;
         else if (/sexo|genero|género|sex/.test(h)) headersIndexMap.sexo = index;
         else if (/procedencia|origen|municipio|sector|direccion|dirección/.test(h)) headersIndexMap.procedencia = index;
+        else if (/motivo|estado|condicion|condición|status|observacion|observación|diagnostico|diagnóstico|situacion|situación/i.test(h)) headersIndexMap.estado = index;
       });
     }
 
@@ -332,6 +336,7 @@ export default function MassiveLoader({ onBatchLoaded, onToast }: MassiveLoaderP
         edad: 2,
         sexo: 3,
         procedencia: 4,
+        estado: 5,
       };
     }
 
@@ -348,10 +353,30 @@ export default function MassiveLoader({ onBatchLoaded, onToast }: MassiveLoaderP
       const rawEdad = headersIndexMap.edad !== -1 ? parseInt(String(row[headersIndexMap.edad] || ""), 10) : undefined;
       const rawSexoRaw = headersIndexMap.sexo !== -1 ? String(row[headersIndexMap.sexo] || "").toLowerCase().trim() : "";
       const rawProcedencia = headersIndexMap.procedencia !== -1 ? String(row[headersIndexMap.procedencia] || "") : "";
+      const rawEstado = headersIndexMap.estado !== -1 ? String(row[headersIndexMap.estado] || "").toLowerCase().trim() : "";
 
       let mappedSexo: "Masculino" | "Femenino" | "Desconocido" = "Desconocido";
       if (/^m(asc)?(ulino)?|h(ombre)?/i.test(rawSexoRaw)) mappedSexo = "Masculino";
       else if (/^f(em)?(enino)?|m(ujer)?/i.test(rawSexoRaw)) mappedSexo = "Femenino";
+
+      // Mapear estado/motivo a valores canónicos
+      let mappedEstado: string | undefined;
+      if (rawEstado) {
+        if (/hospitalizado|hospital|ingresado|internado|activo|en tratamiento|tratamiento|estable|observacion|observación|moderado/i.test(rawEstado))
+          mappedEstado = "hospitalizado";
+        else if (/alta|egreso|egresado|curado|recuperado|sano|saludable/i.test(rawEstado))
+          mappedEstado = "alta";
+        else if (/referido|trasladado|derivado|remitido|transferido|enviado/i.test(rawEstado))
+          mappedEstado = "referido";
+        else if (/fallecido|muerto|deceso|difunto|falleci|óbito|obito|finado|fatal/i.test(rawEstado))
+          mappedEstado = "fallecido";
+        else if (/critico|crítico|grave|uci|intensivo|emergencia|urgencia/i.test(rawEstado))
+          mappedEstado = "hospitalizado"; // crítico = hospitalizado
+        else if (/leve|ambulatorio|consulta|externo/i.test(rawEstado))
+          mappedEstado = "hospitalizado"; // ambulatorio = hospitalizado
+        else
+          mappedEstado = rawEstado; // Conservar valor original si no mapea
+      }
 
       parsedPatients.push({
         id_temporal: Math.random().toString(36).substring(2, 9),
@@ -360,6 +385,7 @@ export default function MassiveLoader({ onBatchLoaded, onToast }: MassiveLoaderP
         edad: isNaN(Number(rawEdad)) ? undefined : rawEdad,
         sexo: mappedSexo,
         procedencia: rawProcedencia.trim() || undefined,
+        estado: mappedEstado || "hospitalizado",
         confianza_ocr: 100, // Imputed from file/manual upload
         status_verificacion: "pendiente",
       });
