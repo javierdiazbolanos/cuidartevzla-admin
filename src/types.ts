@@ -24,6 +24,8 @@ export interface Paciente {
   cedula_masked: string | null;
   cedula?: string;
   procedencia?: string;
+  carga_id?: number | null;
+  carga_secuencial?: number | null;
 }
 
 export interface Transporte {
@@ -54,7 +56,8 @@ export interface ParsedPaciente {
   edad?: number;
   sexo: "Masculino" | "Femenino" | "Desconocido";
   procedencia?: string;
-  confianza_ocr?: number; // 0 - 100 confidence
+  estado?: string;                     // hospitalizado, alta, referido, fallecido, etc.
+  confianza_ocr?: number;
   status_verificacion?: "pendiente" | "validado" | "duplicado";
   motivo_duplicado?: string;
 }
@@ -84,5 +87,6 @@ export interface DedupReport {
   mergeados: number;
   sin_cambios: number;
   errores: number;
+  carga_id?: number;
   detalle: DedupDetail[];
 }

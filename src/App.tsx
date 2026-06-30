@@ -12,11 +12,12 @@ import MassiveLoader from "./components/MassiveLoader";
 import ReviewTable from "./components/ReviewTable";
 import IndividualPatient from "./components/IndividualPatient";
 import TransportManager from "./components/TransportManager";
-import { Activity, Users, Truck, Heart, FileSpreadsheet, PlusCircle, LogOut, ShieldCheck, HelpCircle, AlertCircle } from "lucide-react";
+import CargaManager from "./components/CargaManager";
+import { Activity, Users, Truck, Heart, FileSpreadsheet, PlusCircle, LogOut, ShieldCheck, HelpCircle, AlertCircle, Database } from "lucide-react";
 
 export default function App() {
   const [authorized, setAuthorized] = useState(false);
-  const [activeTab, setActiveTab] = useState<"carga" | "individual" | "transporte">("carga");
+  const [activeTab, setActiveTab] = useState<"carga" | "individual" | "transporte" | "gestion">("carga");
   const [hospitales, setHospitales] = useState<Hospital[]>([]);
   const [existingPatients, setExistingPatients] = useState<Paciente[]>([]);
   const [loading, setLoading] = useState(true);
@@ -26,6 +27,7 @@ export default function App() {
   const [batchSummaryMessage, setBatchSummaryMessage] = useState("");
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [isSuperuser, setIsSuperuser] = useState(false);
 
   // Helper para Toasts rápidos
   const triggerToast = (msg: string) => {
@@ -39,11 +41,28 @@ export default function App() {
       setAuthorized(isAuthorized());
       if (isAuthorized()) {
         loadDataResources();
+        checkSuperUser();
       } else {
         setLoading(false);
       }
     });
   }, [authorized]);
+
+  const checkSuperUser = async () => {
+    try {
+      const code = getVolunteerCode();
+      const res = await fetch(`/api/superuser_status.php?codigo=${encodeURIComponent(code)}`, {
+        headers: { "X-Codigo-Voluntario": code }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setIsSuperuser(data.is_superuser || false);
+      }
+    } catch (err) {
+      console.warn("[App] Error checking superuser:", err);
+      setIsSuperuser(false);
+    }
+  };
 
   const loadDataResources = async () => {
     setLoading(true);
@@ -240,6 +259,19 @@ export default function App() {
               <Truck className="w-4 h-4 shrink-0" />
               <span>TRANSPORTE VOLUNTARIO</span>
             </button>
+            {isSuperuser && (
+              <button
+                onClick={() => setActiveTab("gestion")}
+                className={`py-3.5 px-6 rounded-xl text-sm font-bold tracking-wide flex items-center justify-center space-x-2.5 transition-all duration-200 cursor-pointer ${
+                  activeTab === "gestion"
+                    ? "bg-rose-600 text-white shadow-md shadow-rose-600/20"
+                    : "bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-800 border border-rose-200"
+                }`}
+              >
+                <Database className="w-4 h-4 shrink-0" />
+                <span>GESTIÓN DE CARGAS</span>
+              </button>
+            )}
           </div>
         </div>
       </nav>
@@ -305,12 +337,18 @@ export default function App() {
             <IndividualPatient
               hospitales={hospitales}
               onPatientMutated={loadDataResources}
+              authorized={authorized}
             />
           )}
 
           {/* TAB C: DIRECTORY DE TRANSPORTE */}
           {activeTab === "transporte" && (
             <TransportManager />
+          )}
+
+          {/* TAB D: GESTIÓN DE CARGAS (solo superusuario) */}
+          {activeTab === "gestion" && isSuperuser && (
+            <CargaManager />
           )}
 
         </div>

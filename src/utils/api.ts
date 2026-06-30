@@ -45,7 +45,9 @@ export function getVolunteerCode(): string {
 }
 
 export function isAuthorized(): boolean {
-  return volunteerCode.trim().length >= 4; // Numeric volunteer code (at least 4 digits)
+  // Cualquier código no vacío es aceptado para acceso básico.
+  // Las funciones de superusuario se controlan vía superuser_status.php
+  return volunteerCode !== '' && volunteerCode.length >= 3;
 }
 
 // Dynamically fetch config
@@ -452,12 +454,13 @@ export async function deduplicatePacientes(payload: {
     headers["X-Codigo-Voluntario"] = volunteerCode;
   }
 
-  console.log("[API CALL] POST /deduplicate.php", {
+  console.log("[API CALL] POST /sync.php", {
     pacientesCount: payload.pacientes.length,
   });
 
   try {
-    const res = await fetch(`${API_BASE}/deduplicate.php`, {
+    const params = volunteerCode ? `?codigo=${encodeURIComponent(volunteerCode)}` : '';
+    const res = await fetch(`${API_BASE}/sync.php${params}`, {
       method: "POST",
       headers,
       body: JSON.stringify(bodyPayload),
